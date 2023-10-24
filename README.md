@@ -9,15 +9,29 @@
 Для настройки нам понадобится настроенный yc (как это сделать можно посмотреть [тут](https://cloud.yandex.ru/docs/cli/quickstart)
 * Создаем кластер в тестовой конфигурации (из одного брокера)
   ```bash
-  yc kafka cluster create --version 3.4 --zone-ids ru-central1-a --brokers-count 1 --network-name default --log-segment-bytes 104857600 kafka-ksql
+  yc kafka cluster create \
+  --version 3.4 \
+  --zone-ids ru-central1-a \
+  --brokers-count 1 \
+  --network-name default \
+  --log-segment-bytes 104857600 \
+  kafka-ksql
   ```
 - Создаем топик из туториала ksqlDB для наших данных
   ```bash
-  yc kafka topic create --cluster-name kafka-ksql --partitions 3 --replication-factor 1 locations
+  yc kafka topic create \
+  --cluster-name kafka-ksql \
+  --partitions 3 \
+  --replication-factor 1 \
+  locations
   ```
 - Создаем пользователя для подключения ksqlDB
   ```bash
-  yc kafka --cluster-name kafka-ksql users create --password KsqlPassword --permission topic=*,role=admin ksql
+  yc kafka users create \
+  --cluster-name kafka-ksql \
+  --password KsqlPassword \
+  --permission topic=*,role=admin \
+  ksql
   ```
 
 ## Настройка ksqlDB сервера
@@ -93,7 +107,11 @@
 
 Создаем топик для логов:
 ```bash
-yc kafka topic create --cluster-name kafka-ksql --partitions 3 --replication-factor 1 KSQL_LOG
+yc kafka topic create \
+--cluster-name kafka-ksql \
+--partitions 3 \
+--replication-factor 1 \
+KSQL_LOG
 ```
 
 В файл `./confluent-7.4.1/etc/ksqldb/log4j.properties` добавляем следующие строки:
