@@ -9,60 +9,54 @@
 Для настройки нам понадобится настроенный yc (как это сделать можно посмотреть [тут](https://cloud.yandex.ru/docs/cli/quickstart)
 * Создаем кластер в тестовой конфигурации (из одного брокера)
   ```bash
-  yc kafka cluster create --zone-ids ru-central1-a --brokers-count 1 kafka-ksql --network-id <your-network-id>
+  yc kafka cluster create --version 3.4 --zone-ids ru-central1-a --brokers-count 1 --network-name default --log-segment-bytes 104857600 kafka-ksql
   ```
-- Создаем служебный топик
-  ```bash
-  yc kafka topic create --cluster-name kafka-ksql --partitions 1 --replication-factor 1 --cleanup-policy delete --retention-ms=-1 --min-insync-replicas 1 _confluent-ksql-default__command_topic
-  ```
-- Создаем еще один служебный топик
-  ```bash
-  yc kafka topic create --cluster-name kafka-ksql --partitions 3 --replication-factor 1 default_ksql_processing_log
-  ```
-- И топик из туториала ksqlDB для наших данных
+- Создаем топик из туториала ksqlDB для наших данных
   ```bash
   yc kafka topic create --cluster-name kafka-ksql --partitions 3 --replication-factor 1 locations
   ```
 - Создаем пользователя для подключения ksqlDB
   ```bash
-  yc kafka --cluster-name kafka-ksql users create --password KsqlPassword \
-  --permission topic=_confluent-ksql-default__command_topic,role=ACCESS_ROLE_CONSUMER,role=ACCESS_ROLE_PRODUCER \
-  --permission topic=default_ksql_processing_log,role=ACCESS_ROLE_CONSUMER,role=ACCESS_ROLE_PRODUCER \
-  --permission topic=locations,role=ACCESS_ROLE_CONSUMER,role=ACCESS_ROLE_PRODUCER \
-  ksql
+  yc kafka --cluster-name kafka-ksql users create --password KsqlPassword --permission topic=*,role=admin ksql
   ```
 
 ## Настройка ksqlDB сервера
 
-- Создаем виртуальную машину Compute на базе Ubuntu
-  - В той же сети
-  - С публичным IP адресом
-  - С указанным ssh ключом для подключения
+- Создаем виртуальную машину Compute на базе Ubuntu:
+  ```bash
+  yc compute instance create \ 
+  --create-boot-disk type=network-hdd,size=40,image-family=ubuntu-2004-lts,image-folder-id=standard-images \
+  --network-interface subnet-id=<YOUR_SUBNET_ID>,nat-ip-version=ipv4 \
+  --ssh-key ~/.ssh/id_rsa.pub \
+  --zone ru-central1-a \
+  --name ksql \
+  --cores 4 --memory 16G
+  ```
+  Можно попробовать создать инстанс с меньшим количеством ресурсов.
 - Когда машина создастся, смотрим какой у нее публичный IP и подключаемся к ней по ssh
 - Устанавливаем jre
   ```bash
   apt install openjdk-11-jre-headless
   ```
-- Устанавливаем пакет _confluent-community-2.13_ с [сайта вендора](https://www.confluent.io/download/).
-- Следуя инструкции для подключения к кластеру для Java, создаем хранилище для сертификата
+- Скачиваем и устанавливаем _confluent-community_ с [сайта вендора](https://www.confluent.io/previous-versions/). Туториал проверен на версии 7.4.1.
+- Следуя инструкции для подключения к кластеру для Java, создаем хранилище для сертификата (команда keytool запросит пароль, которым будет защищен доступ к хранилищу, в рамках данного туториала укажите в качестве пароля `keystore_password`)
   ```bash
-  mkdir -p /usr/local/share/ca-certificates/Yandex
-  wget "https://storage.yandexcloud.net/cloud-certs/CA.pem" -O /usr/local/share/ca-certificates/Yandex/YandexCA.crt
+  sudo mkdir -p /usr/local/share/ca-certificates/Yandex
+  sudo wget "https://storage.yandexcloud.net/cloud-certs/CA.pem" -O /usr/local/share/ca-certificates/Yandex/YandexCA.crt
   keytool -keystore client.truststore.jks -alias CARoot -import -file /usr/local/share/ca-certificates/Yandex/YandexCA.crt
-  cp client.truststore.jks /etc/ksqldb
   ```
-- Добавляем в конфиг _/etc/ksqldb/ksql-server.properties_ настройки подключения к кластеру.  FQDN брокера можно посмотреть на вкладке Хосты кластера
+- Добавляем в конфиг _./confluent-7.4.1/etc/ksqldb/ksql-server.properties_ настройки подключения к кластеру.  FQDN брокера можно посмотреть на вкладке Хосты кластера
   ```
   bootstrap.servers=<broker_fqdn>:9091
   sasl.mechanism=SCRAM-SHA-512
   security.protocol=SASL_SSL
-  ssl.truststore.location=/etc/ksqldb/client.truststore.jks
-  ssl.truststore.password=<keystore_password (с шага создания хранилища)>
+  ssl.truststore.location=/home/yc-user/client.truststore.jks
+  ssl.truststore.password=keystore_password
   sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="ksql" password="KsqlPassword";
   ```
 - Запускаем сервис ksqlDB
   ```bash
-  systemctl start confluent-ksqldb.service
+  ./confluent-7.4.1/bin/ksql-server-start ./confluent-7.4.1/etc/ksqldb/ksql-server.properties
   ```
 
 ## Пример использования
@@ -94,3 +88,45 @@
   |8b6eae59                  |37.3944                   |-122.0813                  |
   |4a7c7b41                  |37.4049                   |-122.0822                  |
   ```
+
+## Настройка логирования сервера ksql в Kafka-топик
+
+Создаем топик для логов:
+```bash
+yc kafka topic create --cluster-name kafka-ksql --partitions 3 --replication-factor 1 KSQL_LOG
+```
+
+В файл `./confluent-7.4.1/etc/ksqldb/log4j.properties` добавляем следующие строки:
+```
+log4j.appender.kafka_appender=org.apache.kafka.log4jappender.KafkaLog4jAppender
+log4j.appender.kafka_appender.layout=io.confluent.common.logging.log4j.StructuredJsonLayout
+log4j.appender.kafka_appender.BrokerList=<broker_fqdn>:9091
+log4j.appender.kafka_appender.Topic=KSQL_LOG
+log4j.logger.io.confluent.ksql=INFO,kafka_appender
+
+log4j.appender.kafka_appender.clientJaasConf=org.apache.kafka.common.security.scram.ScramLoginModule required username="ksql" password="KsqlPassword";
+log4j.appender.kafka_appender.SecurityProtocol=SASL_SSL
+log4j.appender.kafka_appender.SaslMechanism=SCRAM-SHA-512
+log4j.appender.kafka_appender.SslTruststoreLocation=/home/yc-user/client.truststore.jks
+log4j.appender.kafka_appender.SslTruststorePassword=keystore_password
+```
+
+Перезапускаем ksql сервер:
+```bash
+export KSQL_LOG4J_OPTS="-Dlog4j.configuration=file:/home/yc-user/confluent-7.4.1/etc/ksqldb/log4j.properties"
+./confluent-7.4.1/bin/ksql-server-start ./confluent-7.4.1/etc/ksqldb/ksql-server.properties
+```
+
+Устанавливаем kafkacat и начинаем читать лог:
+```bash
+sudo apt install kafkacat
+
+kafkacat -b <broker_fqdn>:9091\
+ -t KSQL_LOG \
+ -X security.protocol=SASL_SSL \
+ -X sasl.mechanisms=SCRAM-SHA-512 \
+ -X sasl.username=ksql \
+ -X sasl.password=KsqlPassword \
+ -X ssl.ca.location=/usr/local/share/ca-certificates/Yandex/YandexCA.crt \
+ -Z -K:
+```
